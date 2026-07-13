@@ -1,0 +1,190 @@
+<meta name="robots" content="noindex, nofollow">
+<title>Live AI Cost Telemetry</title>
+<style>
+
+:root{
+  --ground:#0C1013; --panel:#141A1E; --panel-2:#10161A; --line:#232D33;
+  --ink:#ECEFEC; --muted:#7E8C92; --dim:#55636A;
+  --signal:#E0A64B; --signal-wash:rgba(224,166,75,.12); --signal-line:#3A3322;
+  --ok:#5FB98C; --ok-wash:rgba(95,185,140,.13);
+  --hot:#E08A4B;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Menlo",Consolas,monospace;
+}
+@media (prefers-color-scheme:light){:root{
+  --ground:#EEF1F0; --panel:#FFFFFF; --panel-2:#F6F8F7; --line:#DFE5E3;
+  --ink:#141A1C; --muted:#586369; --dim:#8A959A;
+  --signal:#A66A12; --signal-wash:rgba(166,106,18,.10); --signal-line:#E7DCC7;
+  --ok:#2E7D57; --ok-wash:rgba(46,125,87,.10); --hot:#B4640F;
+}}
+:root[data-theme="dark"]{
+  --ground:#0C1013; --panel:#141A1E; --panel-2:#10161A; --line:#232D33;
+  --ink:#ECEFEC; --muted:#7E8C92; --dim:#55636A;
+  --signal:#E0A64B; --signal-wash:rgba(224,166,75,.12); --signal-line:#3A3322;
+  --ok:#5FB98C; --ok-wash:rgba(95,185,140,.13); --hot:#E08A4B;
+}
+:root[data-theme="light"]{
+  --ground:#EEF1F0; --panel:#FFFFFF; --panel-2:#F6F8F7; --line:#DFE5E3;
+  --ink:#141A1C; --muted:#586369; --dim:#8A959A;
+  --signal:#A66A12; --signal-wash:rgba(166,106,18,.10); --signal-line:#E7DCC7;
+  --ok:#2E7D57; --ok-wash:rgba(46,125,87,.10); --hot:#B4640F;
+}
+*{box-sizing:border-box;}
+html{-webkit-text-size-adjust:100%;}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+  background-image:radial-gradient(1100px 500px at 50% -8%, rgba(224,166,75,.05), transparent 70%);}
+:root[data-theme="light"] body,@media (prefers-color-scheme:light){body{background-image:radial-gradient(1100px 500px at 50% -8%, rgba(166,106,18,.05), transparent 70%);}}
+.wrap{max-width:900px;margin:0 auto;padding:clamp(28px,6vw,72px) clamp(18px,5vw,40px) 64px;}
+
+.eyebrow{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11px;
+  letter-spacing:.22em;text-transform:uppercase;color:var(--muted);margin-bottom:22px;}
+.live{width:7px;height:7px;border-radius:50%;background:var(--signal);
+  box-shadow:0 0 0 0 var(--signal);animation:ping 2.4s ease-out infinite;}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(224,166,75,.5);}70%,100%{box-shadow:0 0 0 7px rgba(224,166,75,0);}}
+.masthead h1{font-family:var(--sans);font-size:clamp(30px,6.2vw,58px);line-height:1.04;
+  letter-spacing:-0.03em;font-weight:680;margin:0 0 18px;max-width:16ch;text-wrap:balance;}
+.lede{color:var(--muted);font-size:clamp(15px,2.2vw,17.5px);max-width:60ch;margin:0;}
+
+.readout{margin:clamp(34px,6vw,56px) 0 26px;padding:clamp(22px,4vw,34px) clamp(20px,4vw,34px) 24px;
+  background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--line);
+  border-radius:20px;position:relative;overflow:hidden;}
+.readout::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--signal),transparent);opacity:.5;}
+.ro-label{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);}
+.ro-figure{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink);
+  display:flex;align-items:baseline;gap:2px;margin:10px 0 12px;line-height:1;}
+.ro-figure .cur{font-size:clamp(26px,5vw,40px);color:var(--signal);align-self:flex-start;margin-top:.35em;}
+.ro-figure .amt{font-size:clamp(56px,15vw,124px);letter-spacing:-0.03em;}
+.ro-figure .dec{font-size:clamp(26px,5vw,44px);color:var(--muted);}
+.ro-foot{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--dim);}
+
+.gauges{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:26px;}
+@media (max-width:520px){.gauges{grid-template-columns:1fr;}}
+.gauge{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 16px 15px;}
+.gauge .gv{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:clamp(26px,4.5vw,34px);
+  font-weight:600;letter-spacing:-0.02em;line-height:1;}
+.gauge .gl{font-size:12.5px;color:var(--ink);margin-top:9px;font-weight:550;}
+.gauge .gs{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);margin-top:2px;}
+
+.signal{background:var(--panel);border:1px solid var(--line);border-radius:18px;
+  padding:clamp(18px,3.5vw,26px);margin-bottom:26px;}
+.sig-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;}
+.sig-title{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);}
+.sig-sub{font-size:13.5px;color:var(--ink);margin-top:4px;}
+.chip{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:11px;font-weight:600;
+  letter-spacing:.04em;padding:5px 11px;border-radius:20px;white-space:nowrap;}
+.chip.ok{color:var(--ok);background:var(--ok-wash);border:1px solid var(--ok);}
+.chip.hot{color:var(--hot);background:var(--signal-wash);border:1px solid var(--hot);}
+.chip .ping{width:7px;height:7px;border-radius:50%;background:currentColor;animation:ping2 2.4s ease-out infinite;}
+@keyframes ping2{0%{box-shadow:0 0 0 0 currentColor;}70%,100%{box-shadow:0 0 0 6px transparent;}}
+.spark{width:100%;height:auto;display:block;margin:2px 0 4px;}
+.spark .base{stroke:var(--line);stroke-width:1;vector-effect:non-scaling-stroke;}
+.spark .area{fill:var(--signal-wash);}
+.spark .line{fill:none;stroke:var(--signal);stroke-width:2;vector-effect:non-scaling-stroke;
+  stroke-linejoin:round;stroke-linecap:round;stroke-dasharray:2200;stroke-dashoffset:0;}
+.spark .dot{fill:var(--signal);}
+.sig-note{font-size:13px;color:var(--muted);margin:12px 0 0;max-width:66ch;}
+
+.opnote{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:start;margin-bottom:30px;
+  padding:16px 18px;background:var(--panel-2);border:1px solid var(--line);border-radius:14px;}
+.opnote .op-tick{width:3px;align-self:stretch;border-radius:2px;background:var(--signal);min-height:100%;}
+.opnote p{margin:0;font-size:14px;color:var(--muted);max-width:64ch;}
+.how{border-top:1px solid var(--line);padding-top:30px;}
+.how-lead{font-family:var(--mono);font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted);margin-bottom:18px;}
+.principles{display:grid;grid-template-columns:1fr 1fr;gap:24px 34px;}
+@media (max-width:640px){.principles{grid-template-columns:1fr;gap:20px;}}
+.pr .pt{font-family:var(--mono);font-size:13.5px;font-weight:600;color:var(--ink);margin-bottom:6px;
+  padding-left:14px;position:relative;}
+.pr .pt::before{content:"";position:absolute;left:0;top:.42em;width:6px;height:6px;border-radius:1px;
+  background:var(--signal);}
+.pr .pd{font-size:14px;color:var(--muted);padding-left:14px;max-width:46ch;}
+
+.foot{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:11.5px;line-height:1.7;color:var(--dim);max-width:70ch;}
+
+@media (prefers-reduced-motion:reduce){
+  .live,.chip .ping{animation:none;}
+  .spark .line{stroke-dasharray:none;}
+}
+
+</style>
+<div class="wrap">
+  <header class="masthead">
+    <div class="eyebrow"><span class="live"></span>Live telemetry · self-instrumented</div>
+    <h1>The cost of my own AI, measured live.</h1>
+    <p class="lede">Across my personal and business operations, I use AI as often as I can &mdash; trying to
+      stay on the cutting edge. This panel measures that usage and what it costs, live: every figure is
+      computed the moment an API call returns, cache-aware, refreshed on each run. A working instrument,
+      not a screenshot.</p>
+  </header>
+
+  <section class="readout" aria-label="Metered spend this month">
+    <div class="ro-label">Metered this month</div>
+    <div class="ro-figure"><span class="cur">$</span><span class="amt" data-target="1.65">1</span><span class="dec">.65</span></div>
+    <div class="ro-foot"><span class="live"></span>updated Jul 13, 2026 · 10:59 AM</div>
+  </section>
+
+  <section class="gauges"><div class="gauge"><div class="gv">1.1M</div><div class="gl">Tokens metered</div><div class="gs">this month</div></div><div class="gauge"><div class="gv">6</div><div class="gl">Pipelines instrumented</div><div class="gs">auto-recording</div></div><div class="gauge"><div class="gv">3</div><div class="gl">Brands operated</div><div class="gs">one shared meter</div></div></section>
+
+  <section class="signal">
+    <div class="sig-head">
+      <div><div class="sig-title">Signal</div><div class="sig-sub">Daily metered spend · last 14 days</div></div>
+      <span class="chip ok"><span class="ping"></span>All clear</span>
+    </div>
+    <svg class="spark" viewBox="0 0 880 190" preserveAspectRatio="none" role="img" aria-label="Daily metered spend, last 14 days"><line class="base" x1="6.0" y1="184.0" x2="874.0" y2="184.0"/><path class="area" d="M6.0 184.0 L72.8 184.0 L139.5 184.0 L206.3 184.0 L273.1 184.0 L339.8 122.2 L406.6 111.2 L473.4 145.2 L540.2 156.1 L606.9 150.1 L673.7 184.0 L740.5 184.0 L807.2 184.0 L874.0 26.0 L874.0 184.0 L6.0 184.0 Z"/><path class="line" d="M6.0 184.0 L72.8 184.0 L139.5 184.0 L206.3 184.0 L273.1 184.0 L339.8 122.2 L406.6 111.2 L473.4 145.2 L540.2 156.1 L606.9 150.1 L673.7 184.0 L740.5 184.0 L807.2 184.0 L874.0 26.0"/><circle class="dot" cx="874.0" cy="26.0" r="4.5"/></svg>
+    <p class="sig-note">Anomaly watch runs on every pipeline: each is measured against its own 14-day
+      baseline, and anything crossing 2&times; its norm is flagged. Tracking since Jun 2026.</p>
+  </section>
+
+  <section class="opnote"><span class="op-tick"></span><p>Behind this public readout, the same meter
+    breaks down by brand and by process, and feeds an agent I run on a two-week cycle to hunt for
+    efficiency opportunities &mdash; where a stage can be cached, downshifted to a cheaper model, or cut.</p></section>
+
+  <section class="how">
+    <div class="how-lead">How the meter works</div>
+    <div class="principles">
+      <div class="pr"><div class="pt">Measured, not estimated</div><div class="pd">Cost is derived from each response's own token counts as it returns &mdash; not reconstructed from a monthly bill.</div></div>
+      <div class="pr"><div class="pt">Cache-aware</div><div class="pd">Cached reads are priced at a tenth of fresh input, so a caching optimization shows up as the number visibly dropping.</div></div>
+      <div class="pr"><div class="pt">A smoke alarm, not a ledger</div><div class="pd">Built to catch a process whose cost balloons, not to reconcile invoices. Directional accuracy, deliberately.</div></div>
+      <div class="pr"><div class="pt">Fail-soft, forward-only</div><div class="pd">Metering runs beside the work and can never break it; it records from the moment a pipeline runs onward.</div></div>
+    </div>
+  </section>
+
+  <footer class="foot">
+    Generated Jul 13, 2026 · 10:59 AM from live data. Variable cost only &mdash; fixed subscriptions excluded. Figures are
+    directional estimates from metered tokens; the provider console holds the ground-truth bill.
+  </footer>
+</div>
+<script>
+
+(function(){
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var amt = document.querySelector('.amt');
+  if(amt){
+    var target = parseFloat(amt.getAttribute('data-target')) || 0;
+    var whole = Math.floor(target);
+    if(reduce || whole < 1){ amt.textContent = whole.toLocaleString(); }
+    else {
+      var t0 = null, dur = 900;
+      function tick(ts){
+        if(!t0) t0 = ts;
+        var k = Math.min(1,(ts-t0)/dur);
+        var e = 1-Math.pow(1-k,3);
+        amt.textContent = Math.round(e*whole).toLocaleString();
+        if(k<1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+  }
+  var line = document.querySelector('.spark .line');
+  if(line && !reduce){
+    line.style.strokeDashoffset = '2200';
+    requestAnimationFrame(function(){
+      line.style.transition = 'stroke-dashoffset 1.15s ease-out';
+      line.style.strokeDashoffset = '0';
+    });
+  }
+})();
+
+</script>

@@ -1,0 +1,46 @@
+name: refresh dashboards
+
+# Regenerates both static pages from the live data source and commits them, so the
+# hosted pages stay current without anyone opening a terminal. Credentials come from
+# encrypted repo secrets; no secret is ever written into the committed HTML.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"   # daily, ~06:17 UTC
+  workflow_dispatch: {}      # allow a manual run from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate pages
+        env:
+          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          BRAND_MAP: ${{ secrets.BRAND_MAP }}
+        run: |
+          python build_dashboard.py
+          python build_public.py
+          mv -f public.html index.html
+      - name: Commit if changed
+        run: |
+          git config user.name "ops-bot"
+          git config user.email "ops-bot@users.noreply.github.com"
+          git add index.html dashboard.html
+          if git diff --cached --quiet; then
+            echo "no change"
+          else
+            git commit -m "refresh dashboards [skip ci]"
+            git push
+          fi
