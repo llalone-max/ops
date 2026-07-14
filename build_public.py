@@ -86,12 +86,11 @@ def build():
 
     body = f"""<div class="wrap">
   <header class="masthead">
-    <div class="eyebrow"><span class="live"></span>Live telemetry · self-instrumented</div>
+    <div class="eyebrow"><span class="live"></span>Live telemetry</div>
     <h1>The cost of my own AI, measured live.</h1>
-    <p class="lede">Across my personal and business operations, I use AI as often as I can &mdash; trying to
-      stay on the cutting edge. This panel measures that usage and what it costs, live: every figure is
-      computed the moment an API call returns, cache-aware, refreshed on each run. A working instrument,
-      not a screenshot.</p>
+    <p class="lede">Across my personal and business operations, I use AI as often as I can. This page is
+      a live window into that work: what the usage looks like and what it costs, with every figure
+      computed the moment an API call returns.</p>
   </header>
 
   <section class="readout" aria-label="Metered spend this month">
@@ -112,23 +111,23 @@ def build():
       baseline, and anything crossing 2&times; its norm is flagged. Tracking since {since}.</p>
   </section>
 
-  <section class="opnote"><span class="op-tick"></span><p>Behind this public readout, the same meter
-    breaks down by brand and by process, and feeds an agent I run on a two-week cycle to hunt for
-    efficiency opportunities &mdash; where a stage can be cached, downshifted to a cheaper model, or cut.</p></section>
+  <section class="opnote"><span class="op-tick"></span><p>Behind this public view, the same meter
+    breaks down by brand and by process, and feeds a review I run every two weeks to find
+    efficiency wins.</p></section>
 
   <section class="how">
     <div class="how-lead">How the meter works</div>
     <div class="principles">
-      <div class="pr"><div class="pt">Measured, not estimated</div><div class="pd">Cost is derived from each response's own token counts as it returns &mdash; not reconstructed from a monthly bill.</div></div>
-      <div class="pr"><div class="pt">Cache-aware</div><div class="pd">Cached reads are priced at a tenth of fresh input, so a caching optimization shows up as the number visibly dropping.</div></div>
-      <div class="pr"><div class="pt">A smoke alarm, not a ledger</div><div class="pd">Built to catch a process whose cost balloons, not to reconcile invoices. Directional accuracy, deliberately.</div></div>
-      <div class="pr"><div class="pt">Fail-soft, forward-only</div><div class="pd">Metering runs beside the work and can never break it; it records from the moment a pipeline runs onward.</div></div>
+      <div class="pr"><div class="pt">Measured at the source</div><div class="pd">Cost comes from each response's own token counts, the moment it returns.</div></div>
+      <div class="pr"><div class="pt">Cache-aware</div><div class="pd">Cached reads cost a tenth of fresh input, so a caching win shows up here as the number dropping.</div></div>
+      <div class="pr"><div class="pt">Built to catch spikes</div><div class="pd">The point is noticing when a process starts costing more than it should.</div></div>
+      <div class="pr"><div class="pt">Never in the way</div><div class="pd">Metering runs quietly beside the work and can never break a pipeline.</div></div>
     </div>
   </section>
 
   <footer class="foot">
-    Generated {stamp} from live data. Variable cost only &mdash; fixed subscriptions excluded. Figures are
-    directional estimates from metered tokens; the provider console holds the ground-truth bill.
+    Generated {stamp} from live data. Variable cost only; fixed subscriptions excluded. Figures are
+    estimates from metered tokens. The provider console holds the exact bill.
   </footer>
 </div>"""
 

@@ -160,7 +160,7 @@ def _cost_body(ctx, brand, generated):
                 'As soon as a process tagged to this brand records cost, it shows up here.</div>')
 
     if not ctx["flagged"]:
-        banner = ('<div class="banner ok"><span class="k">clear</span><p>Nothing ballooning &mdash; '
+        banner = ('<div class="banner ok"><span class="k">clear</span><p>Nothing ballooning: '
                   'every process is within ~2x of its own 14-day norm.</p></div>')
     else:
         banner = ('<div class="banner alert"><span class="k">balloon</span><p>Above 2x their 14-day norm: <b>'
@@ -174,9 +174,9 @@ def _cost_body(ctx, brand, generated):
             f'<div class="bar" style="height:{max(3, round(v / mx * 100))}%"></div></div>'
             for _, v in ctx["chart"])
         xlab = "".join(f"<div>{d[5:]}</div>" for d, _ in ctx["chart"])
-        chart_html = (f'<div class="card"><h2>{e(ctx["chart_proc"])} &mdash; daily cost</h2>'
-                      '<p class="cap">The most-active process in this view. A spike would show as a '
-                      'taller bar &mdash; the balloon detector, made literal.</p>'
+        chart_html = (f'<div class="card"><h2>{e(ctx["chart_proc"])} · daily cost</h2>'
+                      '<p class="cap">The most-active process in this view. A spike shows up as a '
+                      'taller bar.</p>'
                       f'<div class="chart">{bars}</div><div class="xlabels">{xlab}</div></div>')
     else:
         chart_html = ""
@@ -197,7 +197,7 @@ def _cost_body(ctx, brand, generated):
             pill = '<span class="st good"><span class="dot"></span>wired</span>'
         else:
             pill = '<span class="st warn"><span class="dot"></span>placeholder</span>'
-        amt = _money(mtd) if (mtd or wired) else "&mdash;"
+        amt = _money(mtd) if (mtd or wired) else "-"
         steps = ctx["proc_step"].get(name, {})
         caret = '<span class="caret">&#9656;</span> ' if steps else ""
         rows += (f'<tr{" class=has-steps onclick=st(this)" if steps else ""}>'
@@ -247,7 +247,7 @@ def render(views, brands, generated):
         name = p.get("Process", "?")
         fl = all_ctx["flags"].get(name, {})
         last = fl.get("last_date")
-        cell = last or "&mdash; no cost recorded yet"
+        cell = last or "no cost recorded yet"
         if last:
             age = (generated.date() - dt.date.fromisoformat(last)).days
             if age > 3:
@@ -266,7 +266,7 @@ def render(views, brands, generated):
 
 
 _TPL = r"""<meta name="robots" content="noindex, nofollow">
-<title>Ops — Cost</title>
+<title>Ops · Cost</title>
 <style>
   :root{--paper:#F3F5F7;--surface:#FFFFFF;--sunk:#EEF1F4;--ink:#171A20;--ink-soft:#565D6A;--muted:#8A93A0;--line:#DCE2E8;--accent:#3F6E86;--good:#2E7D57;--good-soft:#E2F0E9;--good-line:#A7CDBB;--warn:#B4640F;--warn-soft:#F7E9D6;--warn-line:#E0B27C;--zero:#5B6675;--zero-soft:#E7EAEE;--zero-line:#C4CBD4;--bal:#B42318;--bal-soft:#FBE9E7;--bal-line:#E5A79F;--chip:#EDF0F3;--chip-on:#171A20;}
   @media (prefers-color-scheme:dark){:root{--paper:#0F1216;--surface:#181C22;--sunk:#12161B;--ink:#EAECEF;--ink-soft:#9AA4B0;--muted:#6C7683;--line:#272C34;--accent:#6FA6BE;--good:#63B98C;--good-soft:#15251D;--good-line:#2E4C3B;--warn:#E4A24A;--warn-soft:#2A2015;--warn-line:#6B4E22;--zero:#8A93A0;--zero-soft:#1D222A;--zero-line:#333A44;--bal:#F0857A;--bal-soft:#2A1512;--bal-line:#5C2A24;--chip:#20262E;--chip-on:#EAECEF;}}
