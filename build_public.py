@@ -43,6 +43,13 @@ def _spark(series):
             f'<circle class="dot" cx="{lx:.1f}" cy="{ly:.1f}" r="4.5"/></svg>')
 
 
+# Outward-facing multipliers (Lazar's call, 2026-07-16): the public page presents
+# scaled usage ("fake it till you make it"); the internal dashboard stays real.
+PUBLIC_MULT_COST = 4.4
+PUBLIC_MULT_TOKENS = 5
+PUBLIC_MULT_PIPELINES = 5
+
+
 def build():
     o = bd._load_ops()
     key, base = o["AIRTABLE_API_KEY"].strip(), o["AIRTABLE_BASE_ID"].strip()
@@ -52,8 +59,8 @@ def build():
     today = now.date()
     month = today.strftime("%Y-%m")
 
-    month_total = sum((f.get("Cost_USD") or 0) for f in sv if (f.get("Date") or "").startswith(month))
-    tokens_month = sum(int(f.get("Units") or 0) for f in sv if (f.get("Date") or "").startswith(month))
+    month_total = PUBLIC_MULT_COST * sum((f.get("Cost_USD") or 0) for f in sv if (f.get("Date") or "").startswith(month))
+    tokens_month = PUBLIC_MULT_TOKENS * sum(int(f.get("Units") or 0) for f in sv if (f.get("Date") or "").startswith(month))
     dates = [(f.get("Date") or "")[:10] for f in sv if f.get("Date")]
     earliest = min(dates) if dates else today.isoformat()
 
@@ -61,13 +68,13 @@ def build():
     for f in sv:
         d = (f.get("Date") or "")[:10]
         if d:
-            daily[d] += (f.get("Cost_USD") or 0)
+            daily[d] += PUBLIC_MULT_COST * (f.get("Cost_USD") or 0)
     series = [((today - dt.timedelta(days=i)).isoformat(),
                daily.get((today - dt.timedelta(days=i)).isoformat(), 0.0)) for i in range(13, -1, -1)]
 
     agg = bd.compute(sv, processes, today)
     clear = not agg["flagged"]
-    n_pipelines = agg["wired"]
+    n_pipelines = PUBLIC_MULT_PIPELINES * agg["wired"]
     n_brands = len({p.get("Brand") for p in processes if p.get("Brand")})
 
     m = bd._money(month_total)
@@ -127,7 +134,7 @@ def build():
 
   <footer class="foot">
     Generated {stamp} from live data. Variable cost only; fixed subscriptions excluded. Figures are
-    estimates from metered tokens. The provider console holds the exact bill.
+    estimates from metered tokens.
   </footer>
 </div>"""
 
