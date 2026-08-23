@@ -11,3 +11,9 @@ encrypted repo secrets; no credential is ever written into the committed HTML. T
 refuses to render if its display config is missing, so nothing sensitive can leak on a misfire.
 
 Generators: `build_dashboard.py`, `build_public.py` (stdlib only).
+
+## Waiting on Lazar
+
+`OPEN_LEDGER.md` in this folder holds every question this repo has asked him and
+not yet had answered. The same items show on the In basket tab at
+https://ops.lazarlalone.com/dashboard.html, and he answers them in the Ops base.
