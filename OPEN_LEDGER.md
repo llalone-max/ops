@@ -42,6 +42,8 @@ OPEN 2026-08-23. **The Ops tab is only as fresh as the last collector run, and t
 OPEN 2026-08-23. **Test row from the visibility terminal. Safe to drop.**
     Test row from the visibility terminal. Safe to drop.
     KEY: ops-dashboard-refresh|A|test-row-from-the-visibility-terminal-s
+    DECIDED 2026-08-23 (dropped): Self-test of open_item.py add/get/list. Dropped, not deleted.
+
     Kind: info. Source: open_item.py self-test 2026-08-23.
 
 OPEN 2026-08-23. **Process_Runs now holds 456 runs and grows about 750 rows a month, almo**
