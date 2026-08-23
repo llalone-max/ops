@@ -42,6 +42,7 @@ UNSAFE_PATTERNS = (
     r"(?i)\bpurge\b",
     r"(?i)\b[A-Z][A-Z0-9_]{5,}_(KEY|TOKEN|SECRET|JSON)\b",
     r"\bpat[A-Za-z0-9]{6,}\b",
+    r"\b(?:app|tbl|fld|rec|viw)[A-Za-z0-9]{13,}\b",   # an Airtable base, table or record id
     r"[\w.+-]+@[\w-]+\.[\w.]+",           # an email address
     r"(?:^|\s)(?:~/|/Users/|/home/)\S+",  # a path on someone's machine
 )
