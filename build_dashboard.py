@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Generate the internal Ops cost dashboard as a self-contained static HTML page.
+"""Generate the internal Ops dashboard as a self-contained static HTML page.
 
-Reads the live Ops base (Spend_Variable + Processes), attributes every cost to a brand,
-and bakes ONE page with a brand toggle (All + one chip per brand, abbreviated).
-Per brand it computes monthly spend, a PLAIN 14-day baseline with a >=2x balloon flag, a
-trend chart, coverage, and a freshness stamp. All views are pre-rendered server-side (so the
-balloon math lives in Python); the toggle just shows/hides them. Stdlib only.
+Four tabs, all baked server-side from the live Ops base:
+  Cost      Spend_Variable + Processes: monthly spend per process, a PLAIN 14-day baseline with
+            a >=2x balloon flag, a trend chart, coverage, and a freshness stamp, with a brand
+            toggle (All + one chip per brand, abbreviated).
+  Ops       Processes + Process_Runs: one stoplight per process, from the run history the
+            collector reads out of GitHub Actions and the two launchd logs.
+  In basket Open_Items: everything waiting on Lazar, 30-second fixes first.
+  Misses    the missed-post scoreboard, which needs a token that reaches the Posts bases.
+
+This page is committed into a PUBLIC repo, so every word of Open_Items prose passes
+ops_common.public_text before it is rendered. Stdlib only.
 
   python3 build_dashboard.py
 """
@@ -16,7 +22,10 @@ import json
 import html
 import datetime as dt
 import urllib.request
+import urllib.error
 from collections import defaultdict
+
+import ops_common as oc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -230,7 +239,301 @@ def _cost_body(ctx, brand, generated):
     <footer>Variable cost only (fixed subscriptions, incl. the $200 Anthropic Max, are out of scope). Figures are directional estimates from token counts, cache-aware; the Anthropic Console holds the ground-truth bill. Data current through {data_through}.</footer>"""
 
 
-def render(views, brands, generated):
+# ------------------------------------------------------------------- Ops tab and In basket tab
+
+# The four status words, each with the icon that always ships beside it. Colour is never the
+# only signal: every cell carries the icon and the word.
+FLOWING, NEEDS_YOU, BROKEN, UNVERIFIED = "Flowing", "Needs you", "Broken / stalled", "Unverified"
+STATUS_ICON = {FLOWING: "●", NEEDS_YOU: "▲", BROKEN: "■", UNVERIFIED: "◌"}
+STATUS_CLASS = {FLOWING: "flow", NEEDS_YOU: "need", BROKEN: "brok", UNVERIFIED: "unv"}
+STATUS_ORDER = [BROKEN, NEEDS_YOU, UNVERIFIED, FLOWING]
+
+# Triggers that only move when a person sits down with them.
+PERSON_TRIGGERS = {"terminal_only", "watch_loop", "desktop_launcher"}
+# Triggers that report somewhere this page cannot read.
+BLIND_TRIGGERS = {"cloud_routine"}
+
+KIND_ORDER = ["30-second fix", "approval", "decision", "your own task", "info"]
+
+
+def _ts(s):
+    """An Airtable dateTime string as a naive UTC datetime, or None."""
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%f%z"):
+        try:
+            d = dt.datetime.strptime(s, fmt)
+            return d.replace(tzinfo=None)
+        except ValueError:
+            continue
+    return None
+
+
+def _age_words(when, now):
+    if not when:
+        return "never"
+    h = (now - when).total_seconds() / 3600.0
+    if h < 1:
+        return "just now"
+    if h < 48:
+        return f"{int(h)}h ago"
+    return f"{int(h / 24)}d ago"
+
+
+def _ops_status(trigger, expected, runs, now):
+    """(status word, last run, last ok, fail streak). runs is newest first."""
+    last = runs[0] if runs else None
+    last_ok = next((r for r in runs if r.get("Status") == "ok"), None)
+    streak = 0
+    for r in runs:
+        if r.get("Status") in ("fail", "blocked"):
+            streak += 1
+        else:
+            break
+
+    if trigger in PERSON_TRIGGERS:
+        return NEEDS_YOU, last, last_ok, streak
+    if not runs:
+        return UNVERIFIED, None, None, 0
+    if last.get("Status") in ("fail", "blocked"):
+        return BROKEN, last, last_ok, streak
+    if not expected:                       # on demand: the last run is all there is to judge
+        return FLOWING, last, last_ok, streak
+    if last_ok is None:
+        return BROKEN, last, last_ok, streak
+    age_h = (now - _ts(last_ok["Ran_At"])).total_seconds() / 3600.0
+    if age_h > 3 * expected:
+        return BROKEN, last, last_ok, streak
+    if age_h > 1.5 * expected:
+        return NEEDS_YOU, last, last_ok, streak
+    return FLOWING, last, last_ok, streak
+
+
+def _every_words(trigger, expected):
+    if trigger in PERSON_TRIGGERS:
+        return "when you run it"
+    if not expected:
+        return "on demand"
+    if expected == 1:
+        return "hourly"
+    if expected % 24 == 0 and expected >= 24:
+        d = expected // 24
+        return "daily" if d == 1 else f"every {d} days"
+    return f"every {expected}h"
+
+
+def _safe_href(url, brand_map):
+    """A docs link may only be rendered if the URL itself carries no spelled-out brand name."""
+    if not url:
+        return None
+    for full in (brand_map or {}):
+        words = [re.escape(w) for w in re.split(r"[ _-]+", full) if w]
+        if words and re.search("(?i)" + r"[-_ ]?".join(words), url):
+            return None
+    return url
+
+
+def _pill(word):
+    return (f'<span class="ost {STATUS_CLASS[word]}"><span class="ic">{STATUS_ICON[word]}</span>'
+            f'{html.escape(word)}</span>')
+
+
+def ops_tab(processes, runs, open_items, brand_map, generated):
+    e = html.escape
+    now = generated
+    by_proc = defaultdict(list)
+    for r in runs:
+        by_proc[r.get("Process")].append(r)
+    for v in by_proc.values():
+        v.sort(key=lambda r: r.get("Ran_At") or "", reverse=True)
+
+    open_by_engine = defaultdict(int)
+    for f in open_items:
+        if f.get("Status") == "open":
+            open_by_engine[f.get("Engine")] += 1
+
+    known = {p.get("Process") for p in processes}
+    rows_in = list(processes) + [{"Process": p, "Brand": "", "Trigger": "", "Expected_Every_Hours": 0}
+                                 for p in sorted(by_proc) if p not in known]
+
+    computed = []
+    for p in rows_in:
+        name = p.get("Process") or "?"
+        trigger = p.get("Trigger") or ""
+        expected = p.get("Expected_Every_Hours") or 0
+        word, last, last_ok, streak = _ops_status(trigger, expected, by_proc.get(name, []), now)
+        computed.append({
+            "name": name, "brand": p.get("Brand") or "", "trigger": trigger,
+            "expected": expected, "word": word, "last": last, "last_ok": last_ok,
+            "streak": streak, "open": open_by_engine.get(name, 0),
+            "docs": _safe_href(p.get("Docs_Link"), brand_map),
+        })
+
+    counts = {w: sum(1 for c in computed if c["word"] == w) for w in STATUS_ORDER}
+    summary = ", ".join(f"{counts[w]} {w.lower()}" for w in STATUS_ORDER if counts[w])
+    computed.sort(key=lambda c: (STATUS_ORDER.index(c["word"]), -c["open"], c["name"]))
+
+    body = ""
+    for c in computed:
+        last_cell = (f'{_ts(c["last"]["Ran_At"]).strftime("%b %d")} '
+                     f'<span class="dim">{_age_words(_ts(c["last"]["Ran_At"]), now)}</span>'
+                     ) if c["last"] else '<span class="dim">no run log</span>'
+        ok_cell = (_ts(c["last_ok"]["Ran_At"]).strftime("%b %d") if c["last_ok"]
+                   else '<span class="dim">never</span>')
+        streak = f'<b class="bad">{c["streak"]}</b>' if c["streak"] else "0"
+        openc = (f'<span class="obadge">{c["open"]}</span>' if c["open"] else '<span class="dim">0</span>')
+        name = (f'<a href="{e(c["docs"])}" rel="noreferrer noopener">{e(c["name"])}</a>'
+                if c["docs"] else e(c["name"]))
+        body += (f'<tr><td class="proc">{name}</td><td class="src bt">{e(c["brand"])}</td>'
+                 f'<td>{_pill(c["word"])}</td>'
+                 f'<td class="src">{e(c["trigger"]) or "-"}</td>'
+                 f'<td class="src">{last_cell}</td><td class="src">{ok_cell}</td>'
+                 f'<td class="r src">{streak}</td>'
+                 f'<td class="src">{_every_words(c["trigger"], c["expected"])}</td>'
+                 f'<td class="r">{openc}</td></tr>')
+
+    return f"""
+    <div class="sumline">{e(summary) or "nothing to report"}</div>
+    <div class="card"><h2>Every process</h2>
+      <p class="cap">Run history comes from GitHub Actions and from the two scheduled jobs on the Mac.
+      A process marked "{e(NEEDS_YOU)}" is either one a person has to start, or a scheduled one that
+      is running late. "{e(UNVERIFIED)}" means nothing has reported in yet, so this page cannot say.
+      A process name is a link when its docs can be named here.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Process</th><th>Brand</th><th>Status</th><th>Started by</th><th>Last run</th>
+        <th>Last ok</th><th class="r">Fails</th><th>Expected</th><th class="r">Waiting on you</th>
+        </tr></thead><tbody>{body}</tbody></table></div>
+    </div>
+    <div class="legend2">{"".join(_pill(w) for w in STATUS_ORDER)}</div>"""
+
+
+def basket_tab(open_items, brand_map, generated):
+    e = html.escape
+    today = generated.date()
+    live = [f for f in open_items if f.get("Status") == "open"]
+    quick = sum(1 for f in live if f.get("Kind") == "30-second fix")
+
+    groups = defaultdict(list)
+    for f in live:
+        groups[f.get("Kind") or "info"].append(f)
+
+    held_total = 0
+    sections = ""
+    for kind in KIND_ORDER + [k for k in sorted(groups) if k not in KIND_ORDER]:
+        items = groups.get(kind)
+        if not items:
+            continue
+        rows = ""
+        for f in sorted(items, key=lambda x: x.get("Asked_On") or ""):
+            text, held = oc.public_text(f.get("Item"), brand_map)
+            engine, _ = oc.public_text(f.get("Engine"), brand_map)
+            source, src_held = oc.public_text(f.get("Source"), brand_map)
+            asked = f.get("Asked_On")
+            age = ""
+            if asked:
+                try:
+                    age = f"{(today - dt.date.fromisoformat(asked)).days}d"
+                except ValueError:
+                    age = ""
+            if held:
+                held_total += 1
+                cell = ('<span class="dim">held back: this page is public, so read this one in '
+                        'the Ops base</span>')
+            else:
+                cell = e(text)
+            rows += (f'<tr><td class="src bt">{e(engine)}</td><td>{cell}</td>'
+                     f'<td class="r src">{e(age)}</td>'
+                     f'<td class="src">{"" if src_held else e(source)}</td></tr>')
+        sections += (f'<div class="card"><h2>{e(kind)} <span class="n">{len(items)}</span></h2>'
+                     '<div class="scroll"><table><thead><tr><th>Process</th><th>Item</th>'
+                     '<th class="r">Waiting</th><th>Where it came from</th></tr></thead>'
+                     f'<tbody>{rows}</tbody></table></div></div>')
+
+    if not live:
+        return '<div class="stub"><b>Nothing is waiting on you.</b></div>'
+
+    note = ""
+    if held_total:
+        note = (f'<p class="cap">{held_total} of these mention a credential or a file path, so their '
+                'words are held back here and live only in the Ops base.</p>')
+    return f"""
+    <div class="sumline">{len(live)} waiting on you, {quick} of them are 30-second fixes</div>
+    {note}
+    <p class="cap">Answer any of these in the Ops base in Airtable: set Status to decided or done and
+    write the answer in Decision. The next refresh takes it off this list.</p>
+    {sections}"""
+
+
+def misses_tab(key, generated=None):
+    """Last 14 days of scheduled posts per brand, plus the watchdog's unhandled misses.
+
+    The Ops token reaches only the Ops base, so this needs a second one. POSTS_BASES is a JSON
+    map of brand ABBREVIATION to base id, kept in env rather than in this public source.
+    """
+    e = html.escape
+    generated = generated or dt.datetime.now()
+    raw = os.environ.get("POSTS_BASES") or _load_ops().get("POSTS_BASES")
+    try:
+        bases = json.loads(raw) if raw else {}
+    except Exception:
+        bases = {}
+    if not bases:
+        return ('<div class="stub"><b>Missed posts are not readable yet.</b><br>'
+                'This page reads one Airtable base. The posting calendars live in two others, and '
+                'the token it uses cannot reach them.<br>The In basket tab carries the 30-second '
+                'fix that opens this up.</div>')
+
+    today = generated.date()
+    days = [today - dt.timedelta(days=i) for i in range(13, -1, -1)]
+    strips, watch_rows, errors = "", "", []
+    for ab, base in sorted(bases.items()):
+        try:
+            sched = _fetch("Posting_Schedule", key, base)
+        except urllib.error.HTTPError as ex:
+            errors.append(f"{ab}: {ex.code}")
+            continue
+        by_day = defaultdict(list)
+        for f in sched:
+            d = (f.get("Slot_At") or "")[:10]
+            if d:
+                by_day[d].append((f.get("Status") or "").lower())
+        cells = ""
+        for d in days:
+            st = by_day.get(d.isoformat(), [])
+            if any(s == "missed" for s in st):
+                word, cls, ic = "missed", "brok", "■"
+            elif any(s == "posted" for s in st):
+                word, cls, ic = "posted", "flow", "●"
+            elif st:
+                word, cls, ic = "planned", "unv", "◌"
+            else:
+                word, cls, ic = "no slot", "unv", "·"
+            cells += (f'<div class="daycell {cls}" title="{d.isoformat()} {word}">'
+                      f'<span class="ic">{ic}</span><span class="dn">{d.strftime("%d")}</span></div>')
+        strips += (f'<div class="card"><h2>{e(ab)} <span class="n">last 14 days</span></h2>'
+                   f'<div class="strip">{cells}</div></div>')
+
+        try:
+            for f in _fetch("Post_Watch", key, base):
+                if (f.get("Status") or "").lower() == "missed" and not f.get("Handled"):
+                    when, _ = oc.public_text(f.get("Scheduled_At") or "", BRAND_ABBR)
+                    why, held = oc.public_text(f.get("Reason") or "", BRAND_ABBR)
+                    watch_rows += (f'<tr><td class="src bt">{e(ab)}</td>'
+                                   f'<td class="src">{e(f.get("Platform") or f.get("Provider") or "")}</td>'
+                                   f'<td class="src">{e(when[:16])}</td>'
+                                   f'<td>{"" if held else e(why)}</td></tr>')
+        except urllib.error.HTTPError as ex:
+            errors.append(f"{ab} watchdog: {ex.code}")
+
+    watch = ('<div class="card"><h2>Unhandled misses <span class="n">from the watchdog</span></h2>'
+             '<div class="scroll"><table><thead><tr><th>Brand</th><th>Where</th><th>Slot</th>'
+             f'<th>Why</th></tr></thead><tbody>{watch_rows}</tbody></table></div></div>'
+             ) if watch_rows else '<div class="stub">No unhandled misses on the watchdog.</div>'
+    err = (f'<p class="cap">Could not read: {e(", ".join(errors))}</p>') if errors else ""
+    return f'{err}<div class="legend2">{_pill(BROKEN)}{_pill(FLOWING)}{_pill(UNVERIFIED)}</div>{strips}{watch}'
+
+
+def render(views, brands, generated, tabs):
     e = html.escape
     toggle = "".join(
         f'<button role="tab" aria-selected="{"true" if i == 0 else "false"}" '
@@ -240,24 +543,10 @@ def render(views, brands, generated):
         f'<div class="brandview" data-brand="{e(br)}"{"" if i == 0 else " hidden"}>{views[br]}</div>'
         for i, br in enumerate(brands))
 
-    # Ops tab: per-process last-cost-seen, brand-labeled (global; not toggled)
-    ops_rows = ""
-    all_ctx = views["_ops"]
-    for p in sorted(all_ctx["processes"], key=lambda p: p.get("Brand", "")):
-        name = p.get("Process", "?")
-        fl = all_ctx["flags"].get(name, {})
-        last = fl.get("last_date")
-        cell = last or "no cost recorded yet"
-        if last:
-            age = (generated.date() - dt.date.fromisoformat(last)).days
-            if age > 3:
-                cell = f'{last} <span class="stale">({age}d ago)</span>'
-        ops_rows += (f'<tr><td class="proc">{e(name)}</td><td class="src bt">{e(p.get("Brand", ""))}</td>'
-                     f'<td class="src">last cost seen: {cell}</td></tr>')
-
     repl = {
         "__GEN__": generated.strftime("%Y-%m-%d %H:%M"),
-        "__BRAND_TOGGLE__": toggle, "__BRAND_VIEWS__": bodies, "__OPS_ROWS__": ops_rows,
+        "__BRAND_TOGGLE__": toggle, "__BRAND_VIEWS__": bodies,
+        "__OPS_TAB__": tabs["ops"], "__BASKET_TAB__": tabs["basket"], "__MISSES_TAB__": tabs["misses"],
     }
     out = _TPL
     for k, v in repl.items():
@@ -265,8 +554,10 @@ def render(views, brands, generated):
     return out
 
 
-_TPL = r"""<meta name="robots" content="noindex, nofollow">
-<title>Ops · Cost</title>
+_TPL = r"""<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Ops dashboard</title>
 <style>
   :root{--paper:#F3F5F7;--surface:#FFFFFF;--sunk:#EEF1F4;--ink:#171A20;--ink-soft:#565D6A;--muted:#8A93A0;--line:#DCE2E8;--accent:#3F6E86;--good:#2E7D57;--good-soft:#E2F0E9;--good-line:#A7CDBB;--warn:#B4640F;--warn-soft:#F7E9D6;--warn-line:#E0B27C;--zero:#5B6675;--zero-soft:#E7EAEE;--zero-line:#C4CBD4;--bal:#B42318;--bal-soft:#FBE9E7;--bal-line:#E5A79F;--chip:#EDF0F3;--chip-on:#171A20;}
   @media (prefers-color-scheme:dark){:root{--paper:#0F1216;--surface:#181C22;--sunk:#12161B;--ink:#EAECEF;--ink-soft:#9AA4B0;--muted:#6C7683;--line:#272C34;--accent:#6FA6BE;--good:#63B98C;--good-soft:#15251D;--good-line:#2E4C3B;--warn:#E4A24A;--warn-soft:#2A2015;--warn-line:#6B4E22;--zero:#8A93A0;--zero-soft:#1D222A;--zero-line:#333A44;--bal:#F0857A;--bal-soft:#2A1512;--bal-line:#5C2A24;--chip:#20262E;--chip-on:#EAECEF;}}
@@ -274,7 +565,8 @@ _TPL = r"""<meta name="robots" content="noindex, nofollow">
   :root[data-theme="dark"]{--paper:#0F1216;--surface:#181C22;--sunk:#12161B;--ink:#EAECEF;--ink-soft:#9AA4B0;--muted:#6C7683;--line:#272C34;--accent:#6FA6BE;--good:#63B98C;--good-soft:#15251D;--good-line:#2E4C3B;--warn:#E4A24A;--warn-soft:#2A2015;--warn-line:#6B4E22;--zero:#8A93A0;--zero-soft:#1D222A;--zero-line:#333A44;--bal:#F0857A;--bal-soft:#2A1512;--bal-line:#5C2A24;--chip:#20262E;--chip-on:#EAECEF;}
   *{box-sizing:border-box;}
   body{margin:0;background:var(--paper);color:var(--ink);font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.5;-webkit-font-smoothing:antialiased;}
-  .wrap{max-width:760px;margin:0 auto;padding:clamp(20px,4vw,36px) clamp(16px,4vw,28px) 56px;}
+  .wrap{max-width:760px;margin:0 auto;padding:clamp(20px,4vw,36px) clamp(16px,4vw,28px) 56px;transition:max-width .12s;}
+  body.wide .wrap{max-width:1120px;}
   .mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;}
   header{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;}
   h1{font-size:clamp(20px,4vw,26px);margin:0;letter-spacing:-0.02em;font-weight:700;}
@@ -314,7 +606,7 @@ _TPL = r"""<meta name="robots" content="noindex, nofollow">
   th.r,td.r{text-align:right;}
   tbody td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
   tbody tr:last-child td{border-bottom:none;}
-  td.proc{font-family:ui-monospace,monospace;font-weight:600;}
+  td.proc{font-family:ui-monospace,monospace;font-weight:600;white-space:nowrap;}
   td.src{color:var(--ink-soft);font-size:12.5px;}
   td.bt{font-family:ui-monospace,monospace;font-size:11.5px;}
   td.amt{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums;font-weight:600;}
@@ -340,27 +632,53 @@ _TPL = r"""<meta name="robots" content="noindex, nofollow">
   .st.warn{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-line);}
   .st.bal{background:var(--bal-soft);color:var(--bal);border:1px solid var(--bal-line);}
   .stale{font-family:ui-monospace,monospace;font-size:10.5px;color:var(--warn);}
+  .ost{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:650;padding:3px 9px;border-radius:20px;white-space:nowrap;}
+  .ost .ic{font-size:10px;line-height:1;}
+  .ost.flow{background:var(--good-soft);color:var(--good);border:1px solid var(--good-line);}
+  .ost.need{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-line);}
+  .ost.brok{background:var(--bal-soft);color:var(--bal);border:1px solid var(--bal-line);}
+  .ost.unv{background:var(--zero-soft);color:var(--zero);border:1px solid var(--zero-line);}
+  .sumline{font-size:15px;font-weight:600;margin:0 0 16px;letter-spacing:-0.01em;}
+  .legend2{display:flex;gap:8px;flex-wrap:wrap;margin:-6px 0 20px;}
+  .dim{color:var(--muted);}
+  .bad{color:var(--bal);}
+  .obadge{display:inline-block;min-width:22px;text-align:center;font-family:ui-monospace,monospace;font-size:11px;font-weight:700;padding:2px 6px;border-radius:20px;background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-line);}
+  .card h2 .n{font-family:ui-monospace,monospace;font-size:11px;font-weight:700;color:var(--muted);margin-left:6px;}
+  .scroll{overflow-x:auto;}
+  .scroll table{min-width:640px;}
+  #basket .scroll table{min-width:520px;}
+  #basket td{font-size:13px;}
+  #basket td.bt{white-space:nowrap;}
+  @media (max-width:560px){#basket td.bt{white-space:normal;}}
+  #ops td.src,#ops thead th{white-space:nowrap;}
+  .card a{color:var(--accent);}
+  .strip{display:flex;gap:4px;flex-wrap:wrap;}
+  .daycell{flex:1;min-width:34px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 2px;border-radius:8px;font-size:10px;font-family:ui-monospace,monospace;}
+  .daycell.flow{background:var(--good-soft);color:var(--good);border:1px solid var(--good-line);}
+  .daycell.brok{background:var(--bal-soft);color:var(--bal);border:1px solid var(--bal-line);}
+  .daycell.unv{background:var(--zero-soft);color:var(--zero);border:1px solid var(--zero-line);}
+  .daycell .dn{font-weight:700;}
   .stub{background:var(--sunk);border:1px dashed var(--line);border-radius:14px;padding:22px 20px;text-align:center;color:var(--ink-soft);font-size:13.5px;line-height:1.6;}
   footer{margin-top:8px;color:var(--muted);font-size:12px;line-height:1.6;}
 </style>
 <div class="wrap">
-  <header><h1>Ops <span>· variable cost</span></h1><span class="updated">generated __GEN__</span></header>
+  <header><h1>Ops <span>· what is running, what is waiting</span></h1><span class="updated">generated __GEN__</span></header>
   <nav role="tablist">
     <button role="tab" aria-selected="true" onclick="t(this,'cost')">Cost</button>
     <button role="tab" aria-selected="false" onclick="t(this,'ops')">Ops</button>
+    <button role="tab" aria-selected="false" onclick="t(this,'basket')">In basket</button>
     <button role="tab" aria-selected="false" onclick="t(this,'misses')">Misses</button>
   </nav>
   <section class="panel on" id="cost">
     <div class="brands" role="tablist" aria-label="Brand">__BRAND_TOGGLE__</div>
     __BRAND_VIEWS__
   </section>
-  <section class="panel" id="ops"><div class="card"><h2>Process activity</h2><p class="cap">When each process last recorded cost, across all brands. A process that goes quiet may have stopped running.</p>
-    <table><tbody>__OPS_ROWS__</tbody></table></div>
-    <div class="stub">Full ops-health (per-run success / fail + a link to each process's folder) comes next.</div></section>
-  <section class="panel" id="misses"><div class="stub"><b>Missed posts</b><br>A scoreboard of scheduled posts that did not go live, from the Post-Watch watchdog. Coming next.</div></section>
+  <section class="panel" id="ops">__OPS_TAB__</section>
+  <section class="panel" id="basket">__BASKET_TAB__</section>
+  <section class="panel" id="misses">__MISSES_TAB__</section>
 </div>
 <script>
-function t(b,id){document.querySelectorAll('nav [role=tab]').forEach(x=>x.setAttribute('aria-selected',x===b));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id===id));}
+function t(b,id){document.querySelectorAll('nav [role=tab]').forEach(x=>x.setAttribute('aria-selected',x===b));document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('on',p.id===id));document.body.classList.toggle('wide',id==='ops'||id==='misses');window.scrollTo(0,0);}
 function b(btn,brand){document.querySelectorAll('.brands button').forEach(x=>x.setAttribute('aria-selected',x===btn));document.querySelectorAll('.brandview').forEach(v=>v.hidden=(v.dataset.brand!==brand));}
 function st(tr){var n=tr.nextElementSibling;if(n&&n.classList.contains('stepbrk')){n.hidden=!n.hidden;tr.classList.toggle('open');}}
 </script>
@@ -375,6 +693,13 @@ def main():
     key, base = o["AIRTABLE_API_KEY"].strip(), o["AIRTABLE_BASE_ID"].strip()
     sv = _fetch("Spend_Variable", key, base)
     processes = _fetch("Processes", key, base)
+    runs = _fetch("Process_Runs", key, base)
+    open_items = _fetch("Open_Items", key, base)
+    for r in runs:
+        r["Process"] = _mask_proc(r.get("Process"))
+    for f in open_items:
+        f["Engine"] = _mask_proc(f.get("Engine"))
+        f["Brand"] = _mask_brand(f.get("Brand"))
     for f in sv:  # abbreviate brands + strip brand words from process names before anything renders
         f["Brand"] = _mask_brand(f.get("Brand"))
         f["Process"] = _mask_proc(f.get("Process"))
@@ -397,16 +722,24 @@ def main():
             fproc = [p for p in processes if p.get("Brand") == br]
         ctx = compute(fsv, fproc, today)
         views[br] = _cost_body(ctx, br, generated)
-    views["_ops"] = compute(sv, processes, today)  # global, for the Ops tab
+    views["_ops"] = compute(sv, processes, today)  # global, for the Cost tab's coverage numbers
+
+    tabs = {
+        "ops": ops_tab(processes, runs, open_items, BRAND_ABBR, generated),
+        "basket": basket_tab(open_items, BRAND_ABBR, generated),
+        "misses": misses_tab(key, generated),
+    }
 
     path = os.path.join(HERE, "dashboard.html")
     with open(path, "w") as f:
-        f.write(render(views, brands, generated))
+        f.write(render(views, brands, generated, tabs))
     all_ctx = compute(sv, processes, today)
     print(f"wrote {path}")
     print(f"  brands: {', '.join(brands)}")
     print(f"  all-brands this month {_money(all_ctx['month_total'])}; "
           f"coverage {all_ctx['wired']}/{all_ctx['n_proc']}; flagged: {all_ctx['flagged'] or 'none'}")
+    print("  ops tab: " + re.sub("<[^>]+>", "", tabs["ops"]).strip().splitlines()[0])
+    print("  in basket: " + re.sub("<[^>]+>", "", tabs["basket"]).strip().splitlines()[0])
 
 
 if __name__ == "__main__":
