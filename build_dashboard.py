@@ -338,7 +338,7 @@ def _pill(word):
             f'{html.escape(word)}</span>')
 
 
-def ops_tab(processes, runs, open_items, brand_map, generated):
+def ops_tab(processes, runs, open_items, brand_map, generated, freshness=None):
     e = html.escape
     now = generated
     by_proc = defaultdict(list)
@@ -373,11 +373,19 @@ def ops_tab(processes, runs, open_items, brand_map, generated):
     summary = ", ".join(f"{counts[w]} {w.lower()}" for w in STATUS_ORDER if counts[w])
     computed.sort(key=lambda c: (STATUS_ORDER.index(c["word"]), -c["open"], c["name"]))
 
+    fresh = freshness or {}
     body = ""
     for c in computed:
-        last_cell = (f'{_ts(c["last"]["Ran_At"]).strftime("%b %d")} '
-                     f'<span class="dim">{_age_words(_ts(c["last"]["Ran_At"]), now)}</span>'
-                     ) if c["last"] else '<span class="dim">no run log</span>'
+        if c["last"]:
+            when = _ts(c["last"]["Ran_At"])
+            last_cell = f'{when.strftime("%b %d")} <span class="dim">{_age_words(when, now)}</span>'
+        elif c["name"] in fresh:
+            # nobody logs a run for this one, so date it by what it last produced
+            when, label = fresh[c["name"]]
+            last_cell = (f'{when.strftime("%b %d")} '
+                         f'<span class="dim">{_age_words(when, now)}, {e(label)}</span>')
+        else:
+            last_cell = '<span class="dim">no run log</span>'
         ok_cell = (_ts(c["last_ok"]["Ran_At"]).strftime("%b %d") if c["last_ok"]
                    else '<span class="dim">never</span>')
         streak = f'<b class="bad">{c["streak"]}</b>' if c["streak"] else "0"
@@ -398,6 +406,7 @@ def ops_tab(processes, runs, open_items, brand_map, generated):
       <p class="cap">Run history comes from GitHub Actions and from the two scheduled jobs on the Mac.
       A process marked "{e(NEEDS_YOU)}" is either one a person has to start, or a scheduled one that
       is running late. "{e(UNVERIFIED)}" means nothing has reported in yet, so this page cannot say.
+      A process nobody logs a run for is dated by what it last produced, and the cell says which.
       A process name is a link when its docs can be named here.</p>
       <div class="scroll"><table>
         <thead><tr><th>Process</th><th>Brand</th><th>Status</th><th>Started by</th><th>Last run</th>
@@ -464,19 +473,88 @@ def basket_tab(open_items, brand_map, generated):
     {sections}"""
 
 
-def misses_tab(key, generated=None):
-    """Last 14 days of scheduled posts per brand, plus the watchdog's unhandled misses.
+def _posts_creds():
+    """(key, {abbreviation: base id}) for the posting calendars, which live outside the Ops base.
 
-    The Ops token reaches only the Ops base, so this needs a second one. POSTS_BASES is a JSON
-    map of brand ABBREVIATION to base id, kept in env rather than in this public source.
+    The Ops token cannot reach them, so this needs a second one, and neither the token nor the
+    base ids may sit in this public source.
+
+    In CI both arrive as encrypted repo secrets: POSTS_AIRTABLE_API_KEY and POSTS_BASES.
+
+    On the Mac neither is set, so both come from `posts_sources.json` beside the .env this repo
+    resolves, which is in the private ops folder. That file names the .env ALREADY holding the
+    token and the variable inside it; the value is read at run time, so no second copy of a key
+    is ever made and no base id lands in this public repo.
     """
+    o = _load_ops()
+
+    def val(name):
+        return (os.environ.get(name) or o.get(name) or "").strip()
+
+    key = val("POSTS_AIRTABLE_API_KEY")
+    try:
+        bases = json.loads(val("POSTS_BASES") or "{}")
+    except ValueError:
+        bases = {}
+
+    spec = _posts_spec()
+    bases = bases or spec.get("bases") or {}
+    src = os.path.expanduser(spec.get("env_file") or "")
+    want = (spec.get("env_var") or "AIRTABLE_API_KEY") + "="
+    if not key and src and os.path.exists(src):
+        for line in open(src, errors="ignore"):
+            if line.strip().startswith(want):
+                key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    return key, (bases if key else {})
+
+
+def _posts_spec():
+    """`posts_sources.json` from beside the resolved .env, or {} when it is not there."""
+    side = os.path.join(os.path.dirname(os.path.realpath(os.path.join(HERE, ".env"))),
+                        "posts_sources.json")
+    if not os.path.exists(side):
+        return {}
+    try:
+        return json.load(open(side))
+    except ValueError:
+        return {}
+
+
+def last_activity(key, bases):
+    """{process: (datetime, label)} for processes a person starts by hand.
+
+    They write no run row, so the Ops tab dates them by what they PRODUCE. Which table stands
+    for which process is named outside this public source, in posts_sources.json, because those
+    process names spell out the brands. A process with no reachable source is simply absent here
+    and its row keeps saying "no run log", which is the honest answer.
+    """
+    out = {}
+    if not (key and bases):
+        return out
+    for spec in _posts_spec().get("freshness", []):
+        base = bases.get(spec.get("base"))
+        if not base:
+            continue
+        try:
+            rows = _fetch(spec["table"], key, base)
+        except (urllib.error.HTTPError, urllib.error.URLError, KeyError):
+            continue
+        stamps = sorted(str(r.get(spec["field"])) for r in rows if r.get(spec["field"]))
+        if not stamps:
+            continue
+        # these columns are dateTime in one table and a plain date in another
+        newest = stamps[-1]
+        when = _ts(newest) or _ts(newest + "Z") or _ts(newest + "T00:00:00Z")
+        if when:
+            out[_mask_proc(spec["process"])] = (when, spec.get("label") or "last output")
+    return out
+
+
+def misses_tab(key, bases, generated=None):
+    """Last 14 days of scheduled posts per brand, plus the watchdog's unhandled misses."""
     e = html.escape
     generated = generated or dt.datetime.now()
-    raw = os.environ.get("POSTS_BASES") or _load_ops().get("POSTS_BASES")
-    try:
-        bases = json.loads(raw) if raw else {}
-    except Exception:
-        bases = {}
     if not bases:
         return ('<div class="stub"><b>Missed posts are not readable yet.</b><br>'
                 'This page reads one Airtable base. The posting calendars live in two others, and '
@@ -485,19 +563,21 @@ def misses_tab(key, generated=None):
 
     today = generated.date()
     days = [today - dt.timedelta(days=i) for i in range(13, -1, -1)]
-    strips, watch_rows, errors = "", "", []
+    # A slot in the future has not been missed yet, whatever its status says.
+    settled = [d for d in days if d < today]
+    strips, watch_rows, errors, headline = "", "", [], []
     for ab, base in sorted(bases.items()):
         try:
             sched = _fetch("Posting_Schedule", key, base)
         except urllib.error.HTTPError as ex:
-            errors.append(f"{ab}: {ex.code}")
+            errors.append(f"the {ab} calendar ({ex.code})")
             continue
         by_day = defaultdict(list)
         for f in sched:
             d = (f.get("Slot_At") or "")[:10]
             if d:
                 by_day[d].append((f.get("Status") or "").lower())
-        cells = ""
+        cells, missed, posted, planned = "", 0, 0, 0
         for d in days:
             st = by_day.get(d.isoformat(), [])
             if any(s == "missed" for s in st):
@@ -508,29 +588,47 @@ def misses_tab(key, generated=None):
                 word, cls, ic = "planned", "unv", "◌"
             else:
                 word, cls, ic = "no slot", "unv", "·"
+            if d in settled:
+                missed += word == "missed"
+                posted += word == "posted"
+                planned += word == "planned"
             cells += (f'<div class="daycell {cls}" title="{d.isoformat()} {word}">'
                       f'<span class="ic">{ic}</span><span class="dn">{d.strftime("%d")}</span></div>')
+        scored = missed + posted + planned
+        if scored:
+            headline.append(f"{ab} missed {missed} of its last {scored} posting days")
+        note = (f'{missed} missed, {posted} posted, {planned} still marked planned'
+                if scored else 'no slots in this window')
         strips += (f'<div class="card"><h2>{e(ab)} <span class="n">last 14 days</span></h2>'
+                   f'<p class="cap">{e(note)}. A day counts as missed when any slot on it is '
+                   'marked missed. Today and anything later is not scored yet.</p>'
                    f'<div class="strip">{cells}</div></div>')
 
         try:
             for f in _fetch("Post_Watch", key, base):
                 if (f.get("Status") or "").lower() == "missed" and not f.get("Handled"):
                     when, _ = oc.public_text(f.get("Scheduled_At") or "", BRAND_ABBR)
-                    why, held = oc.public_text(f.get("Reason") or "", BRAND_ABBR)
+                    why, held = oc.public_text(f.get("Reason") or f.get("Note") or "", BRAND_ABBR)
                     watch_rows += (f'<tr><td class="src bt">{e(ab)}</td>'
                                    f'<td class="src">{e(f.get("Platform") or f.get("Provider") or "")}</td>'
                                    f'<td class="src">{e(when[:16])}</td>'
                                    f'<td>{"" if held else e(why)}</td></tr>')
-        except urllib.error.HTTPError as ex:
-            errors.append(f"{ab} watchdog: {ex.code}")
+        except urllib.error.HTTPError:
+            pass   # a brand with no watchdog table is normal, not a fault worth a red line
 
     watch = ('<div class="card"><h2>Unhandled misses <span class="n">from the watchdog</span></h2>'
              '<div class="scroll"><table><thead><tr><th>Brand</th><th>Where</th><th>Slot</th>'
              f'<th>Why</th></tr></thead><tbody>{watch_rows}</tbody></table></div></div>'
-             ) if watch_rows else '<div class="stub">No unhandled misses on the watchdog.</div>'
-    err = (f'<p class="cap">Could not read: {e(", ".join(errors))}</p>') if errors else ""
-    return f'{err}<div class="legend2">{_pill(BROKEN)}{_pill(FLOWING)}{_pill(UNVERIFIED)}</div>{strips}{watch}'
+             ) if watch_rows else ('<div class="stub">The watchdog is not holding any missed post '
+                                   'that nobody has dealt with.</div>')
+    err = f'<p class="cap">Could not read {e(", ".join(errors))}.</p>' if errors else ""
+    sumline = (f'<div class="sumline">{e("; ".join(headline))}</div>' if headline else "")
+    legend = ('<div class="legend2">'
+              '<span class="ost brok"><span class="ic">■</span>missed</span>'
+              '<span class="ost flow"><span class="ic">●</span>posted</span>'
+              '<span class="ost unv"><span class="ic">◌</span>planned</span>'
+              '<span class="ost unv"><span class="ic">·</span>no slot</span></div>')
+    return f'{sumline}{err}{legend}{strips}{watch}'
 
 
 def render(views, brands, generated, tabs):
@@ -695,6 +793,8 @@ def main():
     processes = _fetch("Processes", key, base)
     runs = _fetch("Process_Runs", key, base)
     open_items = _fetch("Open_Items", key, base)
+    posts_key, posts_bases = _posts_creds()
+    freshness = last_activity(posts_key, posts_bases)
     for r in runs:
         r["Process"] = _mask_proc(r.get("Process"))
     for f in open_items:
@@ -725,9 +825,9 @@ def main():
     views["_ops"] = compute(sv, processes, today)  # global, for the Cost tab's coverage numbers
 
     tabs = {
-        "ops": ops_tab(processes, runs, open_items, BRAND_ABBR, generated),
+        "ops": ops_tab(processes, runs, open_items, BRAND_ABBR, generated, freshness),
         "basket": basket_tab(open_items, BRAND_ABBR, generated),
-        "misses": misses_tab(key, generated),
+        "misses": misses_tab(posts_key, posts_bases, generated),
     }
 
     path = os.path.join(HERE, "dashboard.html")

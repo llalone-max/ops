@@ -29,6 +29,11 @@ jobs:
           AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
           AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
           BRAND_MAP: ${{ secrets.BRAND_MAP }}
+          # The posting calendars live in two other bases that the key above cannot reach, so
+          # the Misses tab needs a second one. Until both of these secrets exist that tab
+          # renders its honest "not readable yet" panel and nothing else changes.
+          POSTS_AIRTABLE_API_KEY: ${{ secrets.POSTS_AIRTABLE_API_KEY }}
+          POSTS_BASES: ${{ secrets.POSTS_BASES }}
         run: |
           python build_dashboard.py
           python build_public.py
