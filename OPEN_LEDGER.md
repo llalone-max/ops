@@ -90,3 +90,13 @@ OPEN 2026-08-23. **The Spend_Fixed table in the Ops base is empty, so the dashbo
 ## C. KNOWN AND NOT YET SCHEDULED
 
 (nothing yet)
+
+OPEN 2026-08-26. **2026-08-26 misses-tab-secrets: the Misses tab now works but only on th**
+    2026-08-26 misses-tab-secrets: the Misses tab now works but only on this Mac. Give the hosted build the same two values, from a Terminal on this machine, logged in as llalone-max: (1) gh secret set POSTS_AIRTABLE_API_KEY -R llalone-max/ops --body "$(grep '^AIRTABLE_API_KEY=' ~/.content_ledger/.env | cut -d= -f2-)"  (2) gh secret set POSTS_BASES -R llalone-max/ops --body "$(python3 -c \"import json;print(json.dumps(json.load(open('/Users/lazarlalone/lazarvision-ops/posts_sources.json'))['bases']))\")"  Then: gh workflow run refresh.yml -R llalone-max/ops. You will know it worked when https://ops.lazarlalone.com/dashboard.html Misses tab shows two 14-day strips instead of the grey 'not readable yet' panel. Checked 2026-08-26: that key returns 200 on all six tables both tabs read, and 403 on the Ops base, so it is a second key and replaces nothing.
+    KEY: ops-dashboard-refresh|A|2026-08-26-misses-tab-secrets-the-misse
+    Answer it in the Ops base; the In basket tab on the dashboard shows it.
+
+OPEN 2026-08-26. **2026-08-26 collector-not-scheduled: the run collector that keeps the O**
+    2026-08-26 collector-not-scheduled: the run collector that keeps the Ops tab true is still only run by hand. Checked today: no com.lazarlalone.ops-collector plist, no crontab, and no ~/.local/state/ops-collector log directory, so it has never run on a timer. Its own installer says the board silently goes wrong within about two days without it, and that already happened on 08-25. The installer refuses to install unless all four prerequisites are present, so it is safe to run: zsh ~/lazarvision-ops/install_collector_job.sh . It installs a daily 07:40 local job, half an hour before the page rebuilds. Say go and a terminal will run it, or run it yourself. You will know it worked when launchctl list | grep ops-collector returns a line. No terminal has installed it because creating a schedule is not this terminal's to make.
+    KEY: ops-dashboard-refresh|A|2026-08-26-collector-not-scheduled-the
+    Answer it in the Ops base; the In basket tab on the dashboard shows it.

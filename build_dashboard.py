@@ -392,8 +392,11 @@ def ops_tab(processes, runs, open_items, brand_map, generated, freshness=None):
         openc = (f'<span class="obadge">{c["open"]}</span>' if c["open"] else '<span class="dim">0</span>')
         name = (f'<a href="{e(c["docs"])}" rel="noreferrer noopener">{e(c["name"])}</a>'
                 if c["docs"] else e(c["name"]))
-        body += (f'<tr><td class="proc">{name}</td><td class="src bt">{e(c["brand"])}</td>'
+        # Status sits second so a phone shows the whole word without swiping: this table scrolls
+        # sideways at 390, and with Brand in between the status read "Brok..." off the edge.
+        body += (f'<tr><td class="proc">{name}</td>'
                  f'<td>{_pill(c["word"])}</td>'
+                 f'<td class="src bt">{e(c["brand"])}</td>'
                  f'<td class="src">{e(c["trigger"]) or "-"}</td>'
                  f'<td class="src">{last_cell}</td><td class="src">{ok_cell}</td>'
                  f'<td class="r src">{streak}</td>'
@@ -409,7 +412,7 @@ def ops_tab(processes, runs, open_items, brand_map, generated, freshness=None):
       A process nobody logs a run for is dated by what it last produced, and the cell says which.
       A process name is a link when its docs can be named here.</p>
       <div class="scroll"><table>
-        <thead><tr><th>Process</th><th>Brand</th><th>Status</th><th>Started by</th><th>Last run</th>
+        <thead><tr><th>Process</th><th>Status</th><th>Brand</th><th>Started by</th><th>Last run</th>
         <th>Last ok</th><th class="r">Fails</th><th>Expected</th><th class="r">Waiting on you</th>
         </tr></thead><tbody>{body}</tbody></table></div>
     </div>
@@ -749,6 +752,10 @@ _TPL = r"""<meta charset="utf-8">
   #basket td.bt{white-space:nowrap;}
   @media (max-width:560px){#basket td.bt{white-space:normal;}}
   #ops td.src,#ops thead th{white-space:nowrap;}
+  /* On a phone this table scrolls sideways, so the two columns that must be readable without
+     any swiping are the name and the status. Tighten both just enough that the longest status
+     word fits inside 390px instead of being clipped at its last letter. */
+  @media (max-width:560px){#ops .ost{font-size:11px;padding:3px 7px;}#ops td.proc{font-size:12.5px;}}
   .card a{color:var(--accent);}
   .strip{display:flex;gap:4px;flex-wrap:wrap;}
   .daycell{flex:1;min-width:34px;display:flex;flex-direction:column;align-items:center;gap:2px;padding:7px 2px;border-radius:8px;font-size:10px;font-family:ui-monospace,monospace;}
